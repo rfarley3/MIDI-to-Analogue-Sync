@@ -110,7 +110,11 @@ void handleContinue();
 void handleStop();
 void handleSystemReset();
 void pulse_beat();
-void pulse_halfbeat();
+void pulse_half_beat();
+void start_lb();
+void stop_lb();
+void lb_pin_low();
+void lb_pin_high();
 void sync_pin_on();
 void sync_pin_off();
 
@@ -134,6 +138,9 @@ void setup() {
   pinMode(OUT_D_PO_SYNC, OUTPUT);
   digitalWrite(OUT_D_PO_SYNC, LOW);
   SYNC_PULSE_ON_MILLIS = 0;
+  pinMode(OUT_D_LB_SYNC, OUTPUT);
+  digitalWrite(OUT_D_LB_SYNC, LOW);
+  LB_STRING_MILLIS = 0;
   // https://github.com/FortySevenEffects/arduino_midi_library/wiki/Using-Callbacks
   midiPoLb.setHandleClock(handleClock);
   midiPoLb.setHandleStart(handleStart);
@@ -147,7 +154,9 @@ void setup() {
 void loop() {
   // default Arduino named function called repeatedly
   midiPoLb.read();  // blocks as long as it takes to handle any messages
-  sync_pin_off();
+  // midi read is where the MIDI clock/sync messages are read and clock_ticks is advanced, which leads to calling pulse_*
+  sync_pin_off();  // undo vtrig if it's been enough time
+  lb_pin_high();  // undo strig if it's been enough time
 }
 
 
@@ -158,12 +167,46 @@ void pulse_beat() {
   // called once per 24 MIDI clocks (once per beat)
   // used to be where the built-in LED was blinked per beat, but now that pin is for PO sync so LED flashes twice per beat
   // s-trig LB sync
+  lb_pin_low();
 }
 
 
 void pulse_half_beat() {
   // called once per 12 MIDI clocks (half a beat)
   sync_pin_on();
+}
+
+
+void start_lb() {
+  digitalWrite(OUT_D_LB_SYNC, HIGH);
+  LB_STRING_MILLIS = 0;
+  // notes/cv
+}
+
+
+void stop_lb() {
+  digitalWrite(OUT_D_LB_SYNC, LOW);
+  LB_STRING_MILLIS = 0;
+  // notes/cv
+}
+
+
+void lb_pin_low() {
+  // send a strig on the LB Sync out pin
+  digitalWrite(OUT_D_LB_SYNC, LOW);
+  LB_STRING_MILLIS = millis();
+}
+
+
+void lb_pin_high() {
+  // polled each loop, if the strig has been low long enough, turn signal high
+  if (LB_STRING_MILLIS) {
+    // attiny millis overflow is ~49 days, logic to detect that condition out of scope for this sketch
+    if ((millis() - LB_STRING_MILLIS) > LB_STRIG_PERIOD) {
+      digitalWrite(OUT_D_LB_SYNC, HIGH);
+      LB_STRING_MILLIS = 0;
+    }
+  }
 }
 
 
@@ -225,6 +268,7 @@ void handleStart(void) {
   // this logic assumes the 1st pulse is the 1st clock after a start
   clock_ticks = 0;
   pulsing = true;
+  start_lb();
 }
 
 
@@ -238,6 +282,7 @@ void handleStop(void) {
   // turn off any CV
   // allow manual/gated key presses through
   pulsing = false;
+  stop_lb();
 }
 
 
