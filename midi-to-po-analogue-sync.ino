@@ -52,8 +52,12 @@
  * MIDI Vref ------------ Vcc (physical pin 8, marked 5V or 3V on Trinket)
  * MIDI Data ------------ Rx (IN_D_MIDI)
  * MIDI Gnd  ------------ Gnd (physical pin 4)
+ * I'd recommend you read https://mitxela.com/projects/midi_on_the_attiny and use the circuit (minus audio out) at https://mitxela.com/img/uploads/tinymidi/SynthCableSchem.png
+ * I still got lots of errors that caused spurious MIDI Stops (0xfe), which is why I added IGNORE_STOP and IGNORE_RESET
  */
 #define IN_D_MIDI 0
+#define IGNORE_STOP 0  // use RST to stop manually and arm for next auto-start
+#define IGNORE_RESET 1
 /* PO/Volca/Analogue Sync V-trig pulse
  * Prev volca-po-analogue-sync-divider req minimum of 30 msec pulse and refactory period
  *   - 15 in the active state, 14 low/sleep, and loop had a 1 sleep (so loop could use lower power, only poll 1/msec)
@@ -70,7 +74,7 @@ unsigned long SYNC_PULSE_ON_MILLIS = 0;
  * Using Pin 2, which is dread 2, but aread 1
  * Possible inputs:
  *   manually adjust/offset beat tracking by n clocks
- * - auto vs manual pulsing=true
+ * - auto vs manual pulsing=true (see IGNORE_STOP, IGNORE_RESET)
  *   LB frequency pulses per beat change (1/8, 1/4/, 1/2, 1, 2, 4, 8) default 1
  *   LB sync duty cycle percentage, default 100%
  *   CV channel select 0-15
@@ -281,16 +285,25 @@ void handleContinue(void) {
 void handleStop(void) {
   // turn off any CV
   // allow manual/gated key presses through
+  // TODO turn off any ungated CV
+  if(IGNORE_STOP) {
+    return;
+  }
   pulsing = false;
   stop_lb();
 }
 
 
-void handleSystemReset(void) {
-  // system panic, turn off any notes
-  handleStop();
-  // TODO
-  //  digitalWrite(OUT_D_PO_SYNC, LOW);
-  //  SYNC_PULSE_ON_MILLIS = 0;
-  // TODO turn off any cv/notes/lb-sync
+void handleSystemReset() {
+  // 0xff system panic, turn off any outputs
+  // TODO turn off any cv/notes
+  // Either fake handleStop or handleReset is setting pulse to false
+  if(IGNORE_RESET) {
+    return;
+  }
+  pulsing = false;
+  digitalWrite(OUT_D_PO_SYNC, LOW);
+  SYNC_PULSE_ON_MILLIS = 0;
+  digitalWrite(OUT_D_LB_SYNC, LOW);
+  LB_STRING_MILLIS = 0;
 }
