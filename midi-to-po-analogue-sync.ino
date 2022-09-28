@@ -239,7 +239,8 @@ void sync_pin_off() {
  *   - SongPosition (if 0, stop and start, set clock_ticks to 0)?
  *   - SongSelect (stop and start)?
  */
-void handleClock(void) {
+void handleClock() {
+  // 0xf8 system real time clock
   if (!pulsing) {
     return;
   }
@@ -267,8 +268,8 @@ void handleClock(void) {
 }
 
 
-void handleStart(void) {
-  // It's uncertain if there should be a pulse on start, or only the 1st clock after a start
+void handleStart() {
+  // 0xfa It's uncertain if there should be a pulse on start, or only the 1st clock after a start
   // this logic assumes the 1st pulse is the 1st clock after a start
   clock_ticks = 0;
   pulsing = true;
@@ -276,14 +277,14 @@ void handleStart(void) {
 }
 
 
-void handleContinue(void) {
-  // assume you can't pause, so continue is same as start for PO
+void handleContinue() {
+  // 0xfb assume you can't pause, so continue is same as start for PO
   handleStart();
 }
 
 
-void handleStop(void) {
-  // turn off any CV
+void handleStop() {
+  // 0xfe clock is going, but ignore it until started again
   // allow manual/gated key presses through
   // TODO turn off any ungated CV
   if(IGNORE_STOP) {
