@@ -21,18 +21,16 @@
  *     - PPQN (Pulse per Quarter Note) based on MIDI in clock
  *     - consider mod with alternate frequency divisions (pulse per half, whole, 16th, 32nd, etc)
  *     - consider mod with fractional duty cycle percentage (per pulse, only on 50%, with potential offset start by x%); or just be creative with envelope bit
- *   - CV (0-5V, Volt per Octave) with several options to configure, uses a gate and note algorithm setting
+ *   - TODO CV (0-5V, Volt per Octave) with several options to configure, uses a gate and note algorithm setting
  *     - Depending on the options you enable/disable below you can change if the gate/note off turns off CV, and/or if there are retrigger events at note change or clock ticks
  *     - Depending on the option you chose for the note algorithm, you can do lowest, highest, latest, loudest
  *     - You can choose arp (any > 1 notes; up, down, up-down, rand) to handle multiple notes, falling back to alg once all notes are off
  *     - Default is CV gated (by key press) glissando (ignore note on retriggers) (no clock retrigger), latest note, up-down arp
  *
  * Leach power from MIDI at your own risk
- *  - OptoisolatedSchem.png is a proper MIDI circuit
- *    - https://i.stack.imgur.com/WIJf4.png
- *    - or Optoisolated6N137Schem.png
- *    - or Optoisolated6N138Schem.jpg
- *    - or https://tigoe.github.io/SoundExamples/midi-serial.html Optoisolated6N138.png
+ *  - Optoisolated4N35Schem.png is a original spec proper MIDI circuit
+ *    - https://i.stack.imgur.com/WIJf4.png as Optoisolated6N137Schem.png
+ *    - https://tigoe.github.io/SoundExamples/midi-serial.html as Optoisolated6N138.png
  *
  * Great source for MIDI schematics and spec is at:
  *  - https://mitxela.com/other/midi_spec
@@ -41,6 +39,8 @@
  *  - https://mitxela.com/projects/polyphonic_synth_cable
  *    - which includes the image within this repo that shows power leaching the attiny from midi
  *    - https://mitxela.com/img/uploads/tinymidi/SynthCableSchem.png
+ *    - And this amazing write-up https://mitxela.com/projects/midi_on_the_attiny
+ *    - And this, which is fantastic https://mitxela.com/projects/smallest_midi_synth
  *  - Image for Trinket 5V is from Adafruit
  *    - https://learn.adafruit.com/introducing-trinket
  *
@@ -78,12 +78,30 @@
  * MIDI Data ------------ Rx (IN_D_MIDI)
  * MIDI Gnd  ------------ Gnd (physical pin 4)
  * I'd recommend you read https://mitxela.com/projects/midi_on_the_attiny and use the circuit (minus audio out) at https://mitxela.com/img/uploads/tinymidi/SynthCableSchem.png
+ *
  * I still got lots of errors that caused spurious MIDI Stops (0xfe) and Reset (0xff), which is why I added IGNORE_STOP and IGNORE_RESET
  * Problem is that software serial is just very very slow, combine that with heavy use of millis (their own interrupts)
  * and you have high chance for corruption. The power from this vampire circuit isn't enough to increase clock speed to 16 MHz.
+ * Here is a rabbit hole to learn about why interrupt driven millis() and other calls interfer with softwareserial https://www.best-microcontroller-projects.com/arduino-millis.html
+ * Which is summarized at https://arduino.stackexchange.com/a/38575
+ *
  * MIDI reads should be done on hardware serial, so atmega328, atmega32u4, etc; but their power needs are too high.
  * Potentially eval attiny841.
+ * Here is a Teensy 3.6 working as is https://little-scale.blogspot.com/2017/09/quick-and-easy-usb-midi-to-cv-gate.html
  * Potentially remove all interrupt driven code for timers, as long as all timers are less than baudrate (so no bits are missed).
+ *
+ * Potentially code in assembly instead of c/ino Arduino sketch
+ *   - https://emalliab.wordpress.com/2019/03/02/attiny85-midi-to-cv/
+ *     - They were able to do note on/off for CV (and potentially Trigger)
+ *     - But not clock reads for sync
+ *   - https://arduino.stackexchange.com/a/46110 mentions missing messages, although I also saw corrupt messages
+ *   - Mitxela has note on/off/cv but not clock
+ *     - https://git.mitxela.com/synthcable#files
+ *     - https://github.com/mitxela/synthcable/blob/master/SynthCable.asm
+ *     - Including for a Korg device https://mitxela.com/projects/midi_monotron
+ *     - https://git.mitxela.com/MidiMonotron
+ *   - General tool pipeline for AVR ASM https://www.nongnu.org/avr-libc/user-manual/inline_asm.html
+ *
  * Switching to Trinket M0 (Atmel ATSAMD21) for hardware UART.
  */
 #define IN_D_MIDI 0
