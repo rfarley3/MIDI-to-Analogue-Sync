@@ -1,6 +1,6 @@
 /* MIDI to Pocket Operator Sync (a form of Analogue Sync)
  * rfarley3@github
- * 21 Sept 2022
+ * Started 21 Sept 2022
  * 
  * Reads MIDI clock and note on/off, outputs analogue sync and CV.
  * For chip limitations, this does not output gate, trig, mod (pitch), aftertouch, etc.
@@ -26,13 +26,38 @@
  *     - Depending on the option you chose for the note algorithm, you can do lowest, highest, latest, loudest
  *     - You can choose arp (any > 1 notes; up, down, up-down, rand) to handle multiple notes, falling back to alg once all notes are off
  *     - Default is CV gated (by key press) glissando (ignore note on retriggers) (no clock retrigger), latest note, up-down arp
+ *
+ * Leach power from MIDI at your own risk
+ *  - OptoisolatedSchem.png is a proper MIDI circuit
+ *    - https://i.stack.imgur.com/WIJf4.png
+ *    - or Optoisolated6N137Schem.png
+ *    - or Optoisolated6N138Schem.jpg
+ *    - or https://tigoe.github.io/SoundExamples/midi-serial.html Optoisolated6N138.png
+ *
+ * Great source for MIDI schematics and spec is at:
+ *  - https://mitxela.com/other/midi_spec
+ *
+ * Idea is a mixture of things, but lots of credit is due to:
+ *  - https://mitxela.com/projects/polyphonic_synth_cable
+ *    - which includes the image within this repo that shows power leaching the attiny from midi
+ *    - https://mitxela.com/img/uploads/tinymidi/SynthCableSchem.png
+ *  - Image for Trinket 5V is from Adafruit
+ *    - https://learn.adafruit.com/introducing-trinket
+ *
+ * This does not send MIDI, nor use the USB for MIDI
+ *  - See https://github.com/jokkebk/TrinketMIDI to send MIDI over Trinket USB
+ *    - https://blog.adafruit.com/2019/10/09/trinketmidi-updated-with-volume-control-midi-trinket/
+ *  - Here is a project that reads MIDI from Serial and then sends it over USB
+ *    - https://github.com/mildsunrise/trinket-midi-adapter
  */
+#include <avr/power.h>
 #include <MIDI.h>
 
 
 
 /* The 8-pin ATTinys (25/45/85) all have 5 usable digital output pins 0-4
  * The Adafruit Trinket 5V is a t85, but pins 3-4 are shared with USB
+ * 3.3V t85 Trinket tested, but no benefits (couldn't self-regulate Vref)
  * per docs, they are best for outputs (ex: pin 3 has a pullup resistor that would make aread/dread weird)
  * pin | aread | awrite | note
  *  0      N        Y   
@@ -53,11 +78,20 @@
  * MIDI Data ------------ Rx (IN_D_MIDI)
  * MIDI Gnd  ------------ Gnd (physical pin 4)
  * I'd recommend you read https://mitxela.com/projects/midi_on_the_attiny and use the circuit (minus audio out) at https://mitxela.com/img/uploads/tinymidi/SynthCableSchem.png
- * I still got lots of errors that caused spurious MIDI Stops (0xfe), which is why I added IGNORE_STOP and IGNORE_RESET
+ * I still got lots of errors that caused spurious MIDI Stops (0xfe) and Reset (0xff), which is why I added IGNORE_STOP and IGNORE_RESET
+ * Problem is that software serial is just very very slow, combine that with heavy use of millis (their own interrupts)
+ * and you have high chance for corruption. The power from this vampire circuit isn't enough to increase clock speed to 16 MHz.
+ * MIDI reads should be done on hardware serial, so atmega328, atmega32u4, etc; but their power needs are too high.
+ * Potentially eval attiny841.
+ * Potentially remove all interrupt driven code for timers, as long as all timers are less than baudrate (so no bits are missed).
+ * Switching to Trinket M0 (Atmel ATSAMD21) for hardware UART.
  */
 #define IN_D_MIDI 0
 #define IGNORE_STOP 0  // use RST to stop manually and arm for next auto-start
-#define IGNORE_RESET 1
+#define IGNORE_RESET 1  // use RST to force it all off
+#define IGNORE_PARSE_ERROR 1  // if MIDI.h fails to parse a byte, used for debug
+#define PULSE_CHECK_PERIOD 5  // only poll if pulses should be off this often
+unsigned long PULSE_CHECK_MILLIS = 0;
 /* PO/Volca/Analogue Sync V-trig pulse
  * Prev volca-po-analogue-sync-divider req minimum of 30 msec pulse and refactory period
  *   - 15 in the active state, 14 low/sleep, and loop had a 1 sleep (so loop could use lower power, only poll 1/msec)
@@ -113,14 +147,15 @@ void handleStart();
 void handleContinue();
 void handleStop();
 void handleSystemReset();
+void handleError();
 void pulse_beat();
 void pulse_half_beat();
 void start_lb();
 void stop_lb();
 void lb_pin_low();
-void lb_pin_high();
+void lb_pin_high(unsigned long now=0);
 void sync_pin_on();
-void sync_pin_off();
+void sync_pin_off(unsigned long now=0);
 
 
 unsigned int clock_ticks = 0;
@@ -131,12 +166,15 @@ bool pulsing = false;
  * read MIDO from d0
  *   v0 is to blink clock sync on LED on d1 (built-in LED), then only blink per beat
  *   v1 output PO on d1 (which will blink sync on built-in LED)
- *   v2 output LB sync on d3
+ * > v2 output LB sync on d3
+ * Following will not be implemented, moving to chip with hardware UART
  *   v3 blink gate (note on/off) on LED on d4
  *   v4 output gated, latest CV on d4
  */
 void setup() {
   // default Arduino named function called once, before loop
+  // NOTE 16 MHz reqs 5v (not good if using MIDI Vref)
+  if (F_CPU == 16000000) clock_prescale_set(clock_div_1);
   clock_ticks = 0;
   pulsing = false;
   pinMode(OUT_D_PO_SYNC, OUTPUT);
@@ -149,18 +187,36 @@ void setup() {
   midiPoLb.setHandleClock(handleClock);
   midiPoLb.setHandleStart(handleStart);
   midiPoLb.setHandleContinue(handleContinue);
-  midiPoLb.setHandleStop(handleStop);
-  midiPoLb.setHandleSystemReset(handleSystemReset);
+  if (!IGNORE_STOP) midiPoLb.setHandleStop(handleStop);
+  if (!IGNORE_RESET) midiPoLb.setHandleSystemReset(handleSystemReset);
+  if (!IGNORE_PARSE_ERROR) midiPoLb.setHandleError(handleError);
+  // begin(int inChannel=1)
   midiPoLb.begin();
 }
 
 
 void loop() {
   // default Arduino named function called repeatedly
-  midiPoLb.read();  // blocks as long as it takes to handle any messages
-  // midi read is where the MIDI clock/sync messages are read and clock_ticks is advanced, which leads to calling pulse_*
-  sync_pin_off();  // undo vtrig if it's been enough time
-  lb_pin_high();  // undo strig if it's been enough time
+  /* read(int inChannel=midiPoLb.inChannel) aka can be given chan to read, else defaults to one from begin
+   * blocks as long as it takes to handle any messages
+   * reads MIDI clock/sync messages and uses callbacks (setHandle*) to:
+   *   - advance clock_ticks, which leads to calling pulse_*
+   *   - respond to start/continue to turn on pulsing
+   *   - respond to stop/reset to turn off pulsing (unless IGNORE_STOP/IGNORE_RESET)
+   *   Do not use delay() in combo with softwareserial read
+   */
+  midiPoLb.read();
+  /* millis() are interrupt driven, which competes with software serial
+   * Reduce millis calls to prioritize midi.read/reduce its errors:
+   *   - Only call once here and pass value
+   *   - Reduce non-midi.read calls, by only doing them if its been x msecs
+   */
+  unsigned long now = millis();
+  if ((now - PULSE_CHECK_MILLIS) > PULSE_CHECK_PERIOD) {
+    sync_pin_off(now);  // undo vtrig if it's been enough time
+    lb_pin_high(now);  // undo strig if it's been enough time
+    PULSE_CHECK_MILLIS = now;
+  }
 }
 
 
@@ -202,11 +258,14 @@ void lb_pin_low() {
 }
 
 
-void lb_pin_high() {
+void lb_pin_high(unsigned long now=0) {
   // polled each loop, if the strig has been low long enough, turn signal high
   if (LB_STRING_MILLIS) {
+    if (!now) {
+      now = millis();
+    }
     // attiny millis overflow is ~49 days, logic to detect that condition out of scope for this sketch
-    if ((millis() - LB_STRING_MILLIS) > LB_STRIG_PERIOD) {
+    if ((now - LB_STRING_MILLIS) > LB_STRIG_PERIOD) {
       digitalWrite(OUT_D_LB_SYNC, HIGH);
       LB_STRING_MILLIS = 0;
     }
@@ -221,11 +280,14 @@ void sync_pin_on() {
 }
 
 
-void sync_pin_off() {
+void sync_pin_off(unsigned long now=0) {
   // polled each loop, if the pulse has been high long enough, turn it off
   if (SYNC_PULSE_ON_MILLIS) {
+    if (!now) {
+      now = millis();
+    }
     // attiny millis overflow is ~49 days, logic to detect that condition out of scope for this sketch
-    if ((millis() - SYNC_PULSE_ON_MILLIS) > SYNC_PULSE_PERIOD) {
+    if ((now - SYNC_PULSE_ON_MILLIS) > SYNC_PULSE_PERIOD) {
       digitalWrite(OUT_D_PO_SYNC, LOW);
       SYNC_PULSE_ON_MILLIS = 0;
     }
@@ -271,7 +333,7 @@ void handleClock() {
 void handleStart() {
   // 0xfa It's uncertain if there should be a pulse on start, or only the 1st clock after a start
   // this logic assumes the 1st pulse is the 1st clock after a start
-  clock_ticks = 0;
+  clock_ticks = 0;  // if pulsing and fake start comes in, you may get off beat
   pulsing = true;
   start_lb();
 }
@@ -279,6 +341,10 @@ void handleStart() {
 
 void handleContinue() {
   // 0xfb assume you can't pause, so continue is same as start for PO
+    if (pulsing) {
+    // already started, drops any potential (unobserved) fake continue
+    return;
+  }
   handleStart();
 }
 
@@ -287,9 +353,6 @@ void handleStop() {
   // 0xfe clock is going, but ignore it until started again
   // allow manual/gated key presses through
   // TODO turn off any ungated CV
-  if(IGNORE_STOP) {
-    return;
-  }
   pulsing = false;
   stop_lb();
 }
@@ -298,13 +361,25 @@ void handleStop() {
 void handleSystemReset() {
   // 0xff system panic, turn off any outputs
   // TODO turn off any cv/notes
-  // Either fake handleStop or handleReset is setting pulse to false
-  if(IGNORE_RESET) {
-    return;
-  }
   pulsing = false;
   digitalWrite(OUT_D_PO_SYNC, LOW);
   SYNC_PULSE_ON_MILLIS = 0;
   digitalWrite(OUT_D_LB_SYNC, LOW);
   LB_STRING_MILLIS = 0;
+}
+
+
+void handleError() {
+  // If MIDI.h can't parse the serial input, it'll call this
+  // temporary debug, just visually show that it happened
+  pulsing = false;
+  stop_lb();
+  SYNC_PULSE_ON_MILLIS = 0;
+  digitalWrite(OUT_D_PO_SYNC, LOW);
+  delay(100);
+  digitalWrite(OUT_D_PO_SYNC, HIGH);
+  delay(1000);
+  digitalWrite(OUT_D_PO_SYNC, LOW);
+  delay(100);
+  digitalWrite(OUT_D_PO_SYNC, HIGH);
 }
