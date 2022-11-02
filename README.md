@@ -79,3 +79,45 @@ Image for Trinket M0 is from Adafruit
 - https://learn.adafruit.com/adafruit-trinket-m0-circuitpython-arduino/pinouts
 
 
+## Previous Versions
+See tag `Trinket5v` for details on ATTiny85.
+In there is a note about attempting a Trinket 3v (not M0) as well.
+In short, I experienced lots or read errors due to the lack of hardware serial, 
+in the form of spurious false stops (0xfe).
+It's possible to use a t85, but no examples I found show clock reads (probably 
+bc they are noisy, at 24x per beat).
+Even the note on/off examples required significant optimizations to get around 
+not having hardware serial.
+
+
+## Trinket M0 (Atmel ATSAMD21)
+MIDI in, PO sync pulse out, LB sync gate out, gated CV out, ???
+Possible control inputs from user:
+* lb freq divider, play quarter, halves, wholes, etc
+* lb duty percentage (just use an envelope)
+* cv channel selection/filter
+* cv note choice algorithm
+	* play single: latest, highest, lowest, hardest
+	* play arp: up, down, up-down, rand
+* cv strig on any note change
+* cv strig on clock/beat/sync pulse
+* cv at 5v (max)
+* ungated cv
+* +- clock reads offset for adjusting timing against beat
+* auto (armed, wait for MIDI start) vs manual start
+
+See main.py source comments for `Input` for discussion on possible uses for 
+inputs/outputs.
+See main.py source setup comment for status on capabilities.
+
+Pins and their uses here
+0 serial Tx, Rx
+1 PWM, gated CV out, needs PWM to 5V DAC/CV RC circuit
+2 serial Tx, Rx
+
+Default main.py
+D0 ADC analogue input
+D1 DAC analogue output
+D2 digital input pulled up, ground to activate button
+D3 capacitive input, when touched turns on red LED
+D4 Neopixel serial output
