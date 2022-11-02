@@ -1,13 +1,9 @@
 /* MIDI to Pocket Operator Sync (a form of Analogue Sync)
  * rfarley3@github
  * Started 21 Sept 2022
- * 
- * Reads MIDI clock and note on/off, outputs analogue sync and CV.
- * For chip limitations, this does not output gate, trig, mod (pitch), aftertouch, etc.
- * Also, this is written with Pocket Operators and littleBits in mind. PO just needs a clock sync.
- * LB can work fine with a separate gate and/or trig, but LB sync can fill in for gate/trig in most instances.
- * LB CV also works great as CV and gate (CV on only when gate on), esp since s-trig (env particularly) is covered by these on-off-on events
- * 
+ *
+ * Significant documentation in README.md
+ *
  * Reads:
  *   - MIDI in, via http://arduinomidilib.sourceforge.net/a00001.html
  * Writes:
@@ -19,13 +15,6 @@
  *       - some bits are trailing edge some are rising edge
  *       - some bits ignore 5V (like envelope), others (sequencer) control subsequent bits and should get 5V (such as VCO, filter, keyboard)
  *     - PPQN (Pulse per Quarter Note) based on MIDI in clock
- *     - consider mod with alternate frequency divisions (pulse per half, whole, 16th, 32nd, etc)
- *     - consider mod with fractional duty cycle percentage (per pulse, only on 50%, with potential offset start by x%); or just be creative with envelope bit
- *   - TODO CV (0-5V, Volt per Octave) with several options to configure, uses a gate and note algorithm setting
- *     - Depending on the options you enable/disable below you can change if the gate/note off turns off CV, and/or if there are retrigger events at note change or clock ticks
- *     - Depending on the option you chose for the note algorithm, you can do lowest, highest, latest, loudest
- *     - You can choose arp (any > 1 notes; up, down, up-down, rand) to handle multiple notes, falling back to alg once all notes are off
- *     - Default is CV gated (by key press) glissando (ignore note on retriggers) (no clock retrigger), latest note, up-down arp
  *
  * Leach power from MIDI at your own risk
  *  - Optoisolated4N35Schem.png is a original spec proper MIDI circuit
@@ -41,14 +30,17 @@
  *    - https://mitxela.com/img/uploads/tinymidi/SynthCableSchem.png
  *    - And this amazing write-up https://mitxela.com/projects/midi_on_the_attiny
  *    - And this, which is fantastic https://mitxela.com/projects/smallest_midi_synth
- *  - Image for Trinket 5V is from Adafruit
- *    - https://learn.adafruit.com/introducing-trinket
- *
- * This does not send MIDI, nor use the USB for MIDI
- *  - See https://github.com/jokkebk/TrinketMIDI to send MIDI over Trinket USB
- *    - https://blog.adafruit.com/2019/10/09/trinketmidi-updated-with-volume-control-midi-trinket/
- *  - Here is a project that reads MIDI from Serial and then sends it over USB
- *    - https://github.com/mildsunrise/trinket-midi-adapter
+ */
+/*
+ * Idea bin:
+ *   - littleBits sync mods
+ *     - consider mod with alternate frequency divisions (pulse per half, whole, 16th, 32nd, etc)
+ *     - consider mod with fractional duty cycle percentage (per pulse, only on 50%, with potential offset start by x%); or just be creative with envelope bit
+ *   - TODO CV (0-5V, Volt per Octave) with several options to configure, uses a gate and note algorithm setting
+ *     - Depending on the options you enable/disable below you can change if the gate/note off turns off CV, and/or if there are retrigger events at note change or clock ticks
+ *     - Depending on the option you chose for the note algorithm, you can do lowest, highest, latest, loudest
+ *     - You can choose arp (any > 1 notes; up, down, up-down, rand) to handle multiple notes, falling back to alg once all notes are off
+ *     - Default is CV gated (by key press) glissando (ignore note on retriggers) (no clock retrigger), latest note, up-down arp
  */
 #include <avr/power.h>
 #include <MIDI.h>
@@ -181,7 +173,7 @@ bool pulsing = false;
 
 
 /*************************************************
- * read MIDO from d0
+ * read MIDI from d0
  *   v0 is to blink clock sync on LED on d1 (built-in LED), then only blink per beat
  *   v1 output PO on d1 (which will blink sync on built-in LED)
  * > v2 output LB sync on d3
