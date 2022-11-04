@@ -2,26 +2,33 @@
 """MIDI to Pocket Operator Sync (a form of Analogue Sync).
 See README.md and midi-to-po-analogue-sync.ino for more docs
 
-- verify current meets requirements, 1 led blink, then dotstar color
-- port code from ino
- * read MIDI from d0
- *   v0 is to blink clock sync on LED on ?d1? (built-in LED), then only blink per beat
- *   v1 output PO on ?d1?
- *   v2 output LB sync on ?d3?
- *   v3 blink gate (note on/off) on LED on ?d4?
- *   v4 output gated, latest CV on ?d4?
+ * Y verify current from device is sufficient, 1 led blink, then dotstar color wheel
+ * Y port code from ino
+ * Y  v0 output blink clock sync on LED on d13
+ * Y    - read MIDI from RX aka pin 3
+ * Y    - then only blink per beat
+ * Y    - ramp up while !pulsing
+ *      - stuck in purple dot star with blinking red, probably stuck in bootloader
+ *        low power is short purple to 2x flashing yellow every bit
+ *        very low power is all red
+ *        full boot is purple to yellow to run
+ * Y  v1 output PO on d0 aka pin 0
+ * Y    - test with LED
+ * Y    - test on PO in SY2
+ * >  v2 output LB sync on d2 aka pin 2, test with LED then CV bit
+ *    Make MIDI optoisolator circuit and use usb battery pack
+ *    v3 blink gate (note on/off) on dotstar
+ *    v4 output gated, latest CV on ?pin 1? aka A? for true 10b analogue 0-3.3V
 """
 import board
 import busio
 import pwmio
-# from digitalio import DigitalInOut, Direction  # , Pull
+from digitalio import DigitalInOut, Direction  # , Pull
 # from analogio import AnalogOut  # , AnalogIn
 # import touchio
-# from adafruit_hid.keyboard import Keyboard
-# from adafruit_hid.keycode import Keycode
 # import adafruit_dotstar as dotstar
 import time
-import adafruit_midi
+from adafruit_midi import MIDI
 # control_change.mpy  control_change_values.mpy  __init__.mpy
 # midi_continue.mpy  midi_message.mpy  note_off.mpy  note_on.mpy
 # start.mpy  stop.mpy  system_exclusive.mpy  timing_clock.mpy
@@ -39,23 +46,33 @@ from adafruit_midi.stop import Stop
 from adafruit_midi.midi_message import MIDIUnknownEvent
 
 
-led = None
+debug = True
 midi = None
 clock_ticks = 0
 pulsing = False
 pulse_check = 5
 pulse_check_millis = 0
+led = None
 pulse_led = 15
 pulse_led_millis = 0
+sync = None
 pulse_sync = 15
 pulse_sync_millis = 0
 pulse_gate = 15
 pulse_gate_millis = 0
 
 
+def print_debug(*argv):
+    global debug
+    if debug:
+        print(*argv)
+
+
 def setup():
-    global led
+    global debug
     global midi
+    global led
+    global sync
     # One pixel connected internally!
     # dot = dotstar.DotStar(board.APA102_SCK, board.APA102_MOSI, 1, brightness=0.2)
 
@@ -64,6 +81,11 @@ def setup():
     # led.direction = Direction.OUTPUT
     # led.value = 0
     led = pwmio.PWMOut(board.LED, frequency=5000, duty_cycle=0)
+
+    # PO/Volca/Analogue Sync output
+    sync = DigitalInOut(board.D0)
+    sync.direction = Direction.OUTPUT
+    sync.value = 0
 
     # Digital input with pullup on D2
     # button = DigitalInOut(board.D2)
@@ -75,47 +97,23 @@ def setup():
     # Also see "Receive MIDI Over UART and Send Over USB"
     # at https://learn.adafruit.com/midi-for-makers?view=all#midi-messages
     # https://docs.circuitpython.org/en/latest/shared-bindings/busio/#busio.UART
-    uart = busio.UART(None, board.D0, baudrate=31250, timeout=0.001)  # init UART
-    # print(usb_midi.ports)
+    # board.D0 is pin 0
+    # board.RX is pin 3
+    uart = busio.UART(None, board.RX, baudrate=31250, timeout=0.001)  # init UART
     # midi_in/out can be usb_midi.ports[0/1]
     # in_channel can be None for all, int, or tuple
     # out_channel defaults to 0 (UI 1)
-    midi = adafruit_midi.MIDI(midi_in=uart)  # , debug=True)
+    midi = MIDI(midi_in=uart, debug=debug)
     # Convert channel numbers at the presentation layer to the ones musicians use
-    print("Default output channel:", midi.out_channel + 1)
+    print_debug("Default output channel:", midi.out_channel + 1)
     input_chan_str = str(midi.in_channel)
     if isinstance(midi.in_channel, tuple):
         input_chan_str = str([x + 1 for x in midi.in_channel])
-    print("Listening on input channel:", input_chan_str)
-
-
-# HELPERS ##############################
-
-# Helper to convert analog input to voltage
-def getVoltage(pin):
-    return (pin.value * 3.3) / 65536
-
-# Helper to give us a nice color swirl
-def wheel(pos):
-    # Input a value 0 to 255 to get a color value.
-    # The colours are a transition r - g - b - back to r.
-    if (pos < 0):
-        return (0, 0, 0)
-    if (pos > 255):
-        return (0, 0, 0)
-    if (pos < 85):
-        return (int(pos * 3), int(255 - (pos*3)), 0)
-    elif (pos < 170):
-        pos -= 85
-        return (int(255 - pos*3), 0, int(pos*3))
-    else:
-        pos -= 170
-        return (0, int(pos*3), int(255 - pos*3))
-
-# MAIN LOOP ##############################
+    print_debug("Listening on input channel:", input_chan_str)
 
 
 def loop(idx):
+    global debug
     global pulsing
     global pulse_check_millis
     global pulse_check
@@ -123,6 +121,7 @@ def loop(idx):
     global pulse_led
     global midi
     global led
+    global sync
     # spin internal LED around! autoshow is on
     # dot[0] = wheel(i & 255)
 
@@ -139,40 +138,37 @@ def loop(idx):
     # if not button.value:
     #     print("Button on D2 pressed!")
 
-    # if (i % 16) < 8:
-    #     led.value = False
-    # else:
-    #     led.value = True
-    # i = (i+1) % 256  # run from 0 to 255
-    # time.sleep(0.1)
     if pulsing:
         now = time.monotonic() * 1000
         if (now - pulse_check_millis) > pulse_check:
             if pulse_led_millis and (now - pulse_led_millis) > pulse_led:
                 led_pin_off()
-            # TODO sync, gate
+            if pulse_sync_millis and (now - pulse_sync_millis) > pulse_sync:
+                sync_pin_off()
+            # TODO gate
             pulse_check_millis = now
     else:
         led.duty_cycle = idx % 2048
 
     msg_in = midi.receive()  # non-blocking
     if msg_in is not None:
-        print("Received:", msg_in, "at", time.monotonic())
+        print_debug("Received:", msg_in, "at", time.monotonic())
         if isinstance(msg_in, TimingClock):
             if pulsing:
-                print("TimingClock")
-            handle_clock()
+                print_debug("TimingClock")
+                handle_clock()
         elif isinstance(msg_in, Start):
-            print("Start")
+            print_debug("Start")
             handle_start()
         elif isinstance(msg_in, Stop):
-            print("Stop")
+            print_debug("Stop")
             handle_stop()
-        elif isinstance(msg_in, MIDIUnknownEvent):
-            # Message are only known if they are imported
-            print("Unknown MIDI event status ", msg_in.status)
-        else:
-            print("Shouldn't be here, unhandled message")
+        elif debug:
+            if isinstance(msg_in, MIDIUnknownEvent):
+                # Message are only known if they are imported
+                print_debug("Unknown MIDI event status ", msg_in.status)
+            else:
+                print_debug("Shouldn't be here, unhandled message")
 
 
 def handle_clock():
@@ -189,7 +185,10 @@ def handle_clock():
         # clock_ticks (in)  0123456789012345678901234
         # call pulse?       ynnnnnnnnnnnynnnnnnnnnnny
         # clock_ticks (out) 1234567890123456789012341
-        pulse_half_beat()
+        # pulse_half_beat()
+        led_pin_on(level=0.001)
+        # v-trig PO sync
+        sync_pin_on()
     # http://lauterzeit.com/arp_lfo_seq_sync/
     if (clock_ticks % 24) == 0:
         # avoid eventual overflow
@@ -198,37 +197,24 @@ def handle_clock():
         # clock_ticks (in)  0123456789012345678901234
         # call pulse?       ynnnnnnnnnnnnnnnnnnnnnnny
         # clock_ticks (out) 1234567890123456789012341
-        pulse_beat()
+        # pulse_beat()
+        led_pin_on(level=0.2)
+        # s-trig LB sync
+        # lb_pin_low()
     clock_ticks += 1
 
 
-def pulse_beat():
-    # called once per 24 MIDI clocks (once per beat)
-    led_pin_on()
-    # s-trig LB sync
-    # lb_pin_low()
-
-
-def pulse_half_beat():
-    # called once per 12 MIDI clocks (half a beat)
-    led_pin_on(dim=True)
-    # sync_pin_on()
-
-
-def led_pin_on(dim=False, bright=False):
+def led_pin_on(level=0.5):
+    # give a visual indication that a pulse is happening
     global led
     global pulse_led_millis
-    level = 0.5
-    if dim:  # non-beat sync
-        level = 0.01
-    if bright:  # start/stop
-        level = 1
     # led.value = 65535 * level
     led.duty_cycle = int(65535 * level)
     pulse_led_millis = time.monotonic() * 1000
 
 
 def led_pin_off():
+    # polled each loop, if the pulse has been high long enough, turn it off
     global led
     global pulse_led_millis
     # led.value = 0
@@ -236,8 +222,25 @@ def led_pin_off():
     pulse_led_millis = 0
 
 
+def sync_pin_on():
+    # send a pulse on the PO/Volca/Analogue Sync out pin
+    global sync
+    global pulse_sync_millis
+    sync.value = True
+    pulse_sync_millis = time.monotonic() * 1000
+
+
+def sync_pin_off():
+    # polled each loop, if the pulse has been high long enough, turn it off
+    global sync
+    global pulse_sync_millis
+    sync.value = False
+    pulse_sync_millis = 0
+
+
 def handle_start():
-    # 0xfa It's uncertain if there should be a pulse on start, or only the 1st clock after a start
+    # 0xfa It's uncertain if there should be a pulse on start
+    # or only the 1st clock after a start
     # this logic assumes the 1st pulse is the 1st clock after a start
     global clock_ticks
     global pulsing
