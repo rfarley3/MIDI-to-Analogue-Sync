@@ -96,7 +96,6 @@
  *
  * Switching to Trinket M0 (Atmel ATSAMD21) for hardware UART.
  */
-#define IN_D_MIDI 0
 #define IGNORE_STOP 0  // use RST to stop manually and arm for next auto-start
 //#define IGNORE_RESET 1  // use RST to force it all off
 //#define IGNORE_PARSE_ERROR 1  // if MIDI.h fails to parse a byte, used for debug
@@ -111,8 +110,11 @@
  * PO may only be 2.5 msecs, and Volca is 15 msecs
  *   - PO and Volca rated for 5 V 15 msec v-trig pulse, but both should work with 3.3 V (would still give 3 and 5 V logic high)
  */
-#define OUT_A_BEAT 1  // on board LED is on pin 1
-#define OUT_D_PO_SYNC 4
+#define IN_D_MIDI 0
+#define OUT_D_BEAT 1  // on board LED is on pin 1
+// pin 2 aka dread 2, aka aread 1 is reserved for ctrl input (momentary button or 1k pot)
+#define OUT_D_PO_SYNC 3
+#define OUT_A_LB_CV 4  // will be modified to use timer1 to avoid conflict with timer0 use for millis/delay
 #define SYNC_PULSE_PERIOD 5  // 15 is ideal, reducing to minimize impact of delay (since it is blocking)
 //unsigned long SYNC_PULSE_ON_MILLIS = 0;
 /* Input
@@ -132,7 +134,8 @@
  * #define OUT_D_GATE_OFF 2  // if CV RC DAC circuit lingers beyond gate add RT switch with bias HIGH when gate is off, but loose IN_A_* 2
  */
 // littleBits Sync (5v to 0v s-trig)
-#define OUT_D_LB_SYNC 3 // shared with USB, has 1.5k pullup on it per board spec
+// #define OUT_D_LB_SYNC 3 // shared with USB, has 1.5k pullup on it per board spec
+// OUT_D_LB_SYNC removed, will be a RC NPN inverter circuit attached to OUT_D_BEAT
 //#define LB_STRIG_PERIOD 15
 //unsigned long LB_STRING_MILLIS = 0;
 // CV output
@@ -153,6 +156,8 @@
 #endif
 
 
+void PWM4_init();
+void analogWrite4(uint8_t duty_value);
 void handleClock();
 void handleStart();
 //void handleContinue();
@@ -192,11 +197,13 @@ void setup() {
   pulsing = false;
   pinMode(OUT_D_PO_SYNC, OUTPUT);
   digitalWrite(OUT_D_PO_SYNC, LOW);
-  pinMode(OUT_A_BEAT, OUTPUT);
-  digitalWrite(OUT_A_BEAT, LOW);
+  pinMode(OUT_D_BEAT, OUTPUT);
+  digitalWrite(OUT_D_BEAT, LOW);
   //SYNC_PULSE_ON_MILLIS = 0;
-  pinMode(OUT_D_LB_SYNC, OUTPUT);
-  digitalWrite(OUT_D_LB_SYNC, LOW);
+  //pinMode(OUT_D_LB_SYNC, OUTPUT);
+  //digitalWrite(OUT_D_LB_SYNC, LOW);
+  PWM4_init();
+  analogWrite4(0);
   // LB_STRING_MILLIS = 0;
   // https://github.com/FortySevenEffects/arduino_midi_library/wiki/Using-Callbacks
   midiPoLb.setHandleClock(handleClock);
@@ -207,6 +214,22 @@ void setup() {
   // if (!IGNORE_PARSE_ERROR) midiPoLb.setHandleError(handleError);
   // begin(int inChannel=1)
   midiPoLb.begin();
+}
+
+
+// https://learn.adafruit.com/introducing-trinket/programming-with-arduino-ide
+void PWM4_init() {
+  // Set up PWM on Trinket GPIO #4 (PB4, pin 3) using Timer 1
+  TCCR1 = _BV (CS10); // no prescaler
+  GTCCR = _BV (COM1B1) | _BV (PWM1B); // clear OC1B on compare
+  OCR1B = 127; // duty cycle initialize to 50%
+  OCR1C = 255; // frequency
+}
+
+ 
+// Function to allow analogWrite on Trinket GPIO #4
+void analogWrite4(uint8_t duty_value) {
+  OCR1B = duty_value; // duty may be 0 to 255 (0 to 100%)
 }
 
 
@@ -317,20 +340,20 @@ void handleClock() {
     // sync_pin_on();
     digitalWrite(OUT_D_PO_SYNC, HIGH);
     if (beats == 0) {
-      digitalWrite(OUT_A_BEAT, HIGH);
+      digitalWrite(OUT_D_BEAT, HIGH);
     }
-    if ((clock_ticks % 24) == 0) {
-      digitalWrite(OUT_D_LB_SYNC, LOW);
-    }
+    //if ((clock_ticks % 24) == 0) {
+    //  digitalWrite(OUT_D_LB_SYNC, LOW);
+    //}
     delay(SYNC_PULSE_PERIOD);
     digitalWrite(OUT_D_PO_SYNC, LOW);
     if (beats == 0) {
-      digitalWrite(OUT_A_BEAT, LOW);
+      digitalWrite(OUT_D_BEAT, LOW);
     }
-    if ((clock_ticks % 24) == 0) {
-      digitalWrite(OUT_D_LB_SYNC, HIGH);
-    }
-    beats = (beats + 1) % 8;
+    //if ((clock_ticks % 24) == 0) {
+    //  digitalWrite(OUT_D_LB_SYNC, HIGH);
+    //}
+    beats = (beats + 1) % 2;  // do led every 2 2-PPQN, aka every 1-PPQN TODO make variable for frequency divider
   }
   // http://lauterzeit.com/arp_lfo_seq_sync/
   if ((clock_ticks % 24) == 0) {
@@ -354,8 +377,8 @@ void handleStart() {
   // 0xfa It's uncertain if there should be a pulse on start, or only the 1st clock after a start
   // this logic assumes the 1st pulse is the 1st clock after a start
   digitalWrite(OUT_D_PO_SYNC, LOW);
-  digitalWrite(OUT_A_BEAT, LOW);
-  digitalWrite(OUT_D_LB_SYNC, HIGH);
+  digitalWrite(OUT_D_BEAT, LOW);
+  //digitalWrite(OUT_D_LB_SYNC, HIGH);
   clock_ticks = 0;  // if pulsing and fake start comes in, you may get off beat
   beats = 0;
   pulsing = true;
@@ -380,8 +403,8 @@ void handleStop() {
   pulsing = false;
   // stop_lb();
   digitalWrite(OUT_D_PO_SYNC, LOW);
-  digitalWrite(OUT_A_BEAT, LOW);
-  digitalWrite(OUT_D_LB_SYNC, LOW);
+  digitalWrite(OUT_D_BEAT, LOW);
+  //digitalWrite(OUT_D_LB_SYNC, LOW);
 }
 
 
