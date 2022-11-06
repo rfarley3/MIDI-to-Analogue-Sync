@@ -10,11 +10,8 @@
  *   - analogue sync
  *     - v-trig: 5V logic high, 20 msec trigger
  *     - PPEN (Pulse per Eigth Note) based on MIDI in clock
- *   - littleBits sync
- *     - s-trig: 5V constant/resting state, 0V trigger (serves as trigger/note change, and clock)
- *       - some bits are trailing edge some are rising edge
- *       - some bits ignore 5V (like envelope), others (sequencer) control subsequent bits and should get 5V (such as VCO, filter, keyboard)
- *     - PPQN (Pulse per Quarter Note) based on MIDI in clock
+ *     - aka 2 PPQN (Pulse per Quarter note)
+ *   - voltage and current too low to power LB gate or CV
  *
  * Leach power from MIDI at your own risk
  *  - Optoisolated4N35Schem.png is a original spec proper MIDI circuit
@@ -30,17 +27,14 @@
  *    - https://mitxela.com/img/uploads/tinymidi/SynthCableSchem.png
  *    - And this amazing write-up https://mitxela.com/projects/midi_on_the_attiny
  *    - And this, which is fantastic https://mitxela.com/projects/smallest_midi_synth
+ *  - But previous examples didn't read MIDI clock messages, just note-on/off or wrote clocks
  */
 /*
  * Idea bin:
  *   - littleBits sync mods
  *     - consider mod with alternate frequency divisions (pulse per half, whole, 16th, 32nd, etc)
- *     - consider mod with fractional duty cycle percentage (per pulse, only on 50%, with potential offset start by x%); or just be creative with envelope bit
- *   - TODO CV (0-5V, Volt per Octave) with several options to configure, uses a gate and note algorithm setting
- *     - Depending on the options you enable/disable below you can change if the gate/note off turns off CV, and/or if there are retrigger events at note change or clock ticks
- *     - Depending on the option you chose for the note algorithm, you can do lowest, highest, latest, loudest
- *     - You can choose arp (any > 1 notes; up, down, up-down, rand) to handle multiple notes, falling back to alg once all notes are off
- *     - Default is CV gated (by key press) glissando (ignore note on retriggers) (no clock retrigger), latest note, up-down arp
+ *     - consider switch to disable stop (ignore stops) 
+ *     - consider button to adjust (inject fake) clock ticks
  */
 #include <avr/power.h>
 #include <MIDI.h>
@@ -56,7 +50,7 @@
  *  1      N        Y     has the built-in LED as well
  *  2      1        N
  *  3      3        N     resv USB, has pullup resistor, best for dwrite
- *  4      2        Y     resv USB, best for dwrite/awrite, dread/aread may conflict when USB writing to it
+ *  4      2        Y     resv USB, best for dwrite/awrite, dread/aread may conflict when USB writing to it, can use timer1 to not interfere with milli
  */
 /* MIDI
  * Given this pin number use SoftwareSerial and MIDI.h to set up Rx
@@ -66,42 +60,29 @@
  *                       ^d1      |
  * MIDI Data (wire 5) ---|--------|
  * But if you don't care about your equipment (ground loops/voltage isolation), then you can power this from MIDI
- * MIDI Vref ------------ Vcc (physical pin 8, marked 5V or 3V on Trinket)
+ * MIDI Vref ------------ Vcc (physical pin 8, marked 5V or 3V on Trinket, assumes MIDI source has a resistor (such as a 220 Ohm per spec))
  * MIDI Data ------------ Rx (IN_D_MIDI)
  * MIDI Gnd  ------------ Gnd (physical pin 4)
  * I'd recommend you read https://mitxela.com/projects/midi_on_the_attiny and use the circuit (minus audio out) at https://mitxela.com/img/uploads/tinymidi/SynthCableSchem.png
  *
- * I still got lots of errors that caused spurious MIDI Stops (0xfe) and Reset (0xff), which is why I added IGNORE_STOP and IGNORE_RESET
- * Problem is that software serial is just very very slow, combine that with heavy use of millis (their own interrupts)
- * and you have high chance for corruption. The power from this vampire circuit isn't enough to increase clock speed to 16 MHz.
+ * Run at reduced clock speed to survive low voltage/current environment.
+ * Trinket (t85) is easy to set to 8 MHz (implemented here), but 1 MHz might be better (not tested).
+ * I had to trim down this project due to lots of errors that caused spurious MIDI Stops (0xfe) and Reset (0xff)
+ * - converting LED 1 pulse per beat to LB gate sync via a NPN (2N3904 1k bias, 10k collector and output, emitter direct to ground) consumed too much power
+ * - outputting LB gate sync from a pin consumed too much power
+ * - using millis to control pulses interferes with softwareserial
+ * - delays work, but too long and midi.read will have corruptions, so eliminated as many as possible (only 1)
+ * - interrupts are a bad idea, due to software serial
+ * - pin4 can use timer1 (leaving timer0 for delay/milli which helps softwareserial), but no point if not using CV
+ * 
  * Here is a rabbit hole to learn about why interrupt driven millis() and other calls interfer with softwareserial https://www.best-microcontroller-projects.com/arduino-millis.html
  * Which is summarized at https://arduino.stackexchange.com/a/38575
  *
- * MIDI reads should be done on hardware serial, so atmega328, atmega32u4, etc; but their power needs are too high.
- * Potentially eval attiny841.
+ * MIDI reads should be done on hardware serial, so atmega328, atmega32u4, etc; but their power needs are too high. Potentially eval attiny841.
  * Here is a Teensy 3.6 working as is https://little-scale.blogspot.com/2017/09/quick-and-easy-usb-midi-to-cv-gate.html
- * Potentially remove all interrupt driven code for timers, as long as all timers are less than baudrate (so no bits are missed).
+ * I tried Trinket M0 and the hardware serial was great, but the bootloader fires up the dotstar and frequently failed to boot.
  *
- * Potentially code in assembly instead of c/ino Arduino sketch
- *   - https://emalliab.wordpress.com/2019/03/02/attiny85-midi-to-cv/
- *     - They were able to do note on/off for CV (and potentially Trigger)
- *     - But not clock reads for sync
- *   - https://arduino.stackexchange.com/a/46110 mentions missing messages, although I also saw corrupt messages
- *   - Mitxela has note on/off/cv but not clock
- *     - https://git.mitxela.com/synthcable#files
- *     - https://github.com/mitxela/synthcable/blob/master/SynthCable.asm
- *     - Including for a Korg device https://mitxela.com/projects/midi_monotron
- *     - https://git.mitxela.com/MidiMonotron
- *   - General tool pipeline for AVR ASM https://www.nongnu.org/avr-libc/user-manual/inline_asm.html
- *
- * Switching to Trinket M0 (Atmel ATSAMD21) for hardware UART.
- */
-#define IGNORE_STOP 0  // use RST to stop manually and arm for next auto-start
-//#define IGNORE_RESET 1  // use RST to force it all off
-//#define IGNORE_PARSE_ERROR 1  // if MIDI.h fails to parse a byte, used for debug
-//#define PULSE_CHECK_PERIOD 5  // only poll if pulses should be off this often
-//unsigned long PULSE_CHECK_MILLIS = 0;
-/* PO/Volca/Analogue Sync V-trig pulse
+ * PO/Volca/Analogue Sync V-trig pulse
  * Prev volca-po-analogue-sync-divider req minimum of 30 msec pulse and refactory period
  *   - 15 in the active state, 14 low/sleep, and loop had a 1 sleep (so loop could use lower power, only poll 1/msec)
  * Littlebits can use the inverted PO (so 2.5 msecs S-trigger) but the bits themselves keyboard/sequencer/etc short for 10-30 msecs
@@ -112,36 +93,8 @@
  */
 #define IN_D_MIDI 0
 #define OUT_D_BEAT 1  // on board LED is on pin 1
-#define OUT_D_LB_SYNC 2
-// pin 2 aka dread 2, aka aread 1 is reserved for ctrl input (momentary button or 1k pot)
-#define OUT_D_PO_SYNC 3
-#define OUT_A_LB_CV 4  // will be modified to use timer1 to avoid conflict with timer0 use for millis/delay
-#define SYNC_PULSE_PERIOD 5  // 15 is ideal, reducing to minimize impact of delay (since it is blocking)
-//unsigned long SYNC_PULSE_ON_MILLIS = 0;
-/* Input
- * Using Pin 2, which is dread 2, but aread 1
- * Possible inputs:
- *   manually adjust/offset beat tracking by n clocks
- * - auto vs manual pulsing=true (see IGNORE_STOP, IGNORE_RESET)
- *   LB frequency pulses per beat change (1/8, 1/4/, 1/2, 1, 2, 4, 8) default 1
- *   LB sync duty cycle percentage, default 100%
- *   CV channel select 0-15
- * - CV note choice algorithm (latest, highest, lowest, loudest, arp up, down, up-down, rand), default latest
- *   CV is only gate (aka force always 5v) vs PWM DAC as % of Octave per Volt by note number
- *   CV is gated while note on, vs always on last setting that makes sense
- *   CV is glissando vs s-triggers when a note is changed
- *   CV is ignores clock vs s-triggers at LB pulses per beat
- * #define IN_A_NOTEALG/CHAN 1  // if not CV then IN_A_FREQ/CHAN 2
- * #define OUT_D_GATE_OFF 2  // if CV RC DAC circuit lingers beyond gate add RT switch with bias HIGH when gate is off, but loose IN_A_* 2
- */
-// littleBits Sync (5v to 0v s-trig)
-// #define OUT_D_LB_SYNC 3 // shared with USB, has 1.5k pullup on it per board spec
-// OUT_D_LB_SYNC removed, will be a RC NPN inverter circuit attached to OUT_D_BEAT
-//#define LB_STRIG_PERIOD 15
-//unsigned long LB_STRING_MILLIS = 0;
-// CV output
-//  Default CV is gated (by key press) glissando (ignore note on retriggers) (no clock retrigger), latest note, up-down arp
-//#define OUT_A_CV 4  // if not CV then OUT_D_GATE
+#define OUT_D_PO_SYNC 3  // 3 or 4 (since they are better for outputs) and preserves 2 for aread(1)
+#define SYNC_PULSE_PERIOD 5  // 15 is ideal, see comments above, reducing to minimize impact of delay (since delay is blocking)
 
 
 // from MIDI Bench Example
@@ -157,22 +110,13 @@
 #endif
 
 
-void PWM4_init();
-void analogWrite4(uint8_t duty_value);
+//void PWM4_init();
+//void analogWrite4(uint8_t duty_value);
 void handleClock();
 void handleStart();
-//void handleContinue();
 void handleStop();
+//void handleContinue();
 //void handleSystemReset();
-//void handleError();
-//void pulse_beat();
-//void pulse_half_beat();
-//void start_lb();
-//void stop_lb();
-//void lb_pin_low();
-//void lb_pin_high(unsigned long now=0);
-//void sync_pin_on();
-//void sync_pin_off(unsigned long now=0);
 
 
 unsigned int clock_ticks = 0;
@@ -182,16 +126,12 @@ bool pulsing = false;
 
 /*************************************************
  * read MIDI from d0
- *   v0 is to blink clock sync on LED on d1 (built-in LED), then only blink per beat
- *   v1 output PO on d1 (which will blink sync on built-in LED)
- * > v2 output LB sync on d3
- * Following will not be implemented, moving to chip with hardware UART
- *   v3 blink gate (note on/off) on LED on d4
- *   v4 output gated, latest CV on d4
+ *   blink built-in LED (D1) at first clock of a measure
+ *   pulse V-trig (D3) at 2 PPQN
  */
 void setup() {
-  // default Arduino named function called once, before loop
   // NOTE 16 MHz reqs 5v (not good if using MIDI Vref)
+  // keep this commented out to stay at 8 MHz to reduce power requirements
   // if (F_CPU == 16000000) clock_prescale_set(clock_div_1);  // sets clock to 16 MHz, default is 8 Mhz
   clock_ticks = 0;
   beats = 0;
@@ -200,59 +140,50 @@ void setup() {
   digitalWrite(OUT_D_PO_SYNC, LOW);
   pinMode(OUT_D_BEAT, OUTPUT);
   digitalWrite(OUT_D_BEAT, LOW);
-  //SYNC_PULSE_ON_MILLIS = 0;
-  pinMode(OUT_D_LB_SYNC, OUTPUT);
-  digitalWrite(OUT_D_LB_SYNC, LOW);
-  PWM4_init();
-  analogWrite4(0);  // OUT_A_LB_CV
-  // LB_STRING_MILLIS = 0;
+  // PWM4_init();
+  // analogWrite4(0);
   // https://github.com/FortySevenEffects/arduino_midi_library/wiki/Using-Callbacks
   midiPoLb.setHandleClock(handleClock);
   midiPoLb.setHandleStart(handleStart);
+  midiPoLb.setHandleStop(handleStop);
   // midiPoLb.setHandleContinue(handleContinue);
-  if (!IGNORE_STOP) midiPoLb.setHandleStop(handleStop);
-  // if (!IGNORE_RESET) midiPoLb.setHandleSystemReset(handleSystemReset);
-  // if (!IGNORE_PARSE_ERROR) midiPoLb.setHandleError(handleError);
+  // midiPoLb.setHandleSystemReset(handleSystemReset);
   // begin(int inChannel=1)
   midiPoLb.begin();
 }
 
 
-// https://learn.adafruit.com/introducing-trinket/programming-with-arduino-ide
-void PWM4_init() {
-  // Set up PWM on Trinket GPIO #4 (PB4, pin 3) using Timer 1
-  TCCR1 = _BV (CS10); // no prescaler
-  GTCCR = _BV (COM1B1) | _BV (PWM1B); // clear OC1B on compare
-  OCR1B = 127; // duty cycle initialize to 50%
-  OCR1C = 255; // frequency
-}
-
- 
-// Function to allow analogWrite on Trinket GPIO #4
-void analogWrite4(uint8_t duty_value) {
-  OCR1B = duty_value; // duty may be 0 to 255 (0 to 100%)
-}
+//// https://learn.adafruit.com/introducing-trinket/programming-with-arduino-ide
+//void PWM4_init() {
+//  // Set up PWM on Trinket GPIO #4 (PB4, pin 3) using Timer 1
+//  TCCR1 = _BV (CS10); // no prescaler
+//  GTCCR = _BV (COM1B1) | _BV (PWM1B); // clear OC1B on compare
+//  OCR1B = 127; // duty cycle initialize to 50%
+//  OCR1C = 255; // frequency
+//}
+//
+// 
+//// Function to allow analogWrite on Trinket GPIO #4
+//void analogWrite4(uint8_t duty_value) {
+//  OCR1B = duty_value; // duty may be 0 to 255 (0 to 100%)
+//}
 
 
 void loop() {
-  // default Arduino named function called repeatedly
   /* read(int inChannel=midiPoLb.inChannel) aka can be given chan to read, else defaults to one from begin
    * blocks as long as it takes to handle any messages
    * reads MIDI clock/sync messages and uses callbacks (setHandle*) to:
    *   - advance clock_ticks, which leads to calling pulse_*
    *   - respond to start/continue to turn on pulsing
    *   - respond to stop/reset to turn off pulsing (unless IGNORE_STOP/IGNORE_RESET)
-   *   Do not use delay() in combo with softwareserial read
+   * read turns off interrupts and uses delay which reads millis; millis use timer0 
+   * so any other timer0 usage, interrupts, or millis will degrade softwareserial
    */
-  midiPoLb.read();  // read turns off interrupts, uses delay which uses millis which uses timer0 and any other millis will interfere
+  midiPoLb.read();  
 }
 
 
 /* MIDI Handlers
- * Do any of these need to be covered?
- *   - TimeCodeQuarterFrame (if 0, stop and start/set clock_ticks to 0)?
- *   - SongPosition (if 0, stop and start, set clock_ticks to 0)?
- *   - SongSelect (stop and start)?
  */
 void handleClock() {
   // 0xf8 system real time clock
@@ -263,43 +194,27 @@ void handleClock() {
   // There are 24 MIDI clocks per beat, so 24 MIDI PPQN
   // PO and Volca use 2 PPQN, so 12 MIDI pulses per 1 PO pulse
   if ((clock_ticks % 12) == 0) {
+    // called once per 12 MIDI clocks (half a beat)
     //                   0         1         2
     // clock_ticks (in)  0123456789012345678901234
     // call pulse?       ynnnnnnnnnnnynnnnnnnnnnny
     // clock_ticks (out) 1234567890123456789012341
-    // pulse_half_beat();
-    // called once per 12 MIDI clocks (half a beat)
-    // sync_pin_on();
     digitalWrite(OUT_D_PO_SYNC, HIGH);
     if (beats == 0) {
       digitalWrite(OUT_D_BEAT, HIGH);
-    }
-    if ((clock_ticks % 24) == 0) {  // todo freq div
-      digitalWrite(OUT_D_LB_SYNC, LOW);
     }
     delay(SYNC_PULSE_PERIOD);
     digitalWrite(OUT_D_PO_SYNC, LOW);
     if (beats == 0) {
       digitalWrite(OUT_D_BEAT, LOW);
     }
-    if ((clock_ticks % 24) == 0) {
-      digitalWrite(OUT_D_LB_SYNC, HIGH);
-    }
-    beats = (beats + 1) % 8;  // do led every measure. // prev 2 2-PPQN, aka every 1-PPQN TODO make variable for frequency divider
+    beats = (beats + 1) % 8;  // blink led every measure to give user ability to catch drift
+    // the built-in LED should blink at same time as step 1 in your sequencer
   }
   // http://lauterzeit.com/arp_lfo_seq_sync/
   if ((clock_ticks % 24) == 0) {
     // avoid eventual overflow
     clock_ticks = 0;
-    //                   0         1         2
-    // clock_ticks (in)  0123456789012345678901234
-    // call pulse?       ynnnnnnnnnnnnnnnnnnnnnnny
-    // clock_ticks (out) 1234567890123456789012341
-    // pulse_beat();
-    // called once per 24 MIDI clocks (once per beat)
-    // used to be where the built-in LED was blinked per beat, but now that pin is for PO sync so LED flashes twice per beat
-    // s-trig LB sync
-    // lb_pin_low();
   }
   clock_ticks++;
 }
@@ -310,12 +225,17 @@ void handleStart() {
   // this logic assumes the 1st pulse is the 1st clock after a start
   digitalWrite(OUT_D_PO_SYNC, LOW);
   digitalWrite(OUT_D_BEAT, LOW);
-  digitalWrite(OUT_D_LB_SYNC, HIGH);
-  // TODO Test analogWrite4(255);  // OUT_A_LB_CV
-  clock_ticks = 0;  // if pulsing and fake start comes in, you may get off beat
+  clock_ticks = 0;
   beats = 0;
   pulsing = true;
-  // start_lb();
+}
+
+
+void handleStop() {
+  // 0xfe clock is going, but ignore it until started again
+  pulsing = false;
+  digitalWrite(OUT_D_PO_SYNC, LOW);
+  digitalWrite(OUT_D_BEAT, LOW);
 }
 
 
@@ -329,25 +249,7 @@ void handleStart() {
 //}
 
 
-void handleStop() {
-  // 0xfe clock is going, but ignore it until started again
-  // allow manual/gated key presses through
-  // TODO turn off any ungated CV
-  pulsing = false;
-  // stop_lb();
-  digitalWrite(OUT_D_PO_SYNC, LOW);
-  digitalWrite(OUT_D_BEAT, LOW);
-  digitalWrite(OUT_D_LB_SYNC, LOW);
-  // TODO Test analogWrite4(0);  // OUT_A_LB_CV
-}
-
-
 //void handleSystemReset() {
 //  // 0xff system panic, turn off any outputs
-//  // TODO turn off any cv/notes
-//  pulsing = false;
-//  digitalWrite(OUT_D_PO_SYNC, LOW);
-//  SYNC_PULSE_ON_MILLIS = 0;
-//  digitalWrite(OUT_D_LB_SYNC, LOW);
-//  LB_STRING_MILLIS = 0;
+//  handleStop();
 //}
