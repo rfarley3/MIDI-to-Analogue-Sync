@@ -93,7 +93,9 @@
  */
 #define IN_D_MIDI 0
 #define OUT_D_BEAT 1  // on board LED is on pin 1
+#define IN_D_NOSTOP 2
 #define OUT_D_PO_SYNC 3  // 3 or 4 (since they are better for outputs) and preserves 2 for aread(1)
+// see notes in handle_clock for alternate use for pin 4
 #define SYNC_PULSE_PERIOD 5  // 15 is ideal, see comments above, reducing to minimize impact of delay (since delay is blocking)
 
 
@@ -140,15 +142,31 @@ void setup() {
   digitalWrite(OUT_D_PO_SYNC, LOW);
   pinMode(OUT_D_BEAT, OUTPUT);
   digitalWrite(OUT_D_BEAT, LOW);
+  pinMode(IN_D_NOSTOP, INPUT_PULLUP);
+  // give chance for pullup to settle, may not be necessary
+  delay(100);
+  bool respect_stops = digitalRead(IN_D_NOSTOP);
+  // no need to waste current going to ground, we won't be checking this input anymore
+  pinMode(IN_D_NOSTOP, OUTPUT);
+  digitalWrite(IN_D_NOSTOP, LOW);
   // PWM4_init();
   // analogWrite4(0);
   // https://github.com/FortySevenEffects/arduino_midi_library/wiki/Using-Callbacks
   midiPoLb.setHandleClock(handleClock);
   midiPoLb.setHandleStart(handleStart);
-  midiPoLb.setHandleStop(handleStop);
+  if (respect_stops) {
+    midiPoLb.setHandleStop(handleStop);
+  }
   // midiPoLb.setHandleContinue(handleContinue);
   // midiPoLb.setHandleSystemReset(handleSystemReset);
   // begin(int inChannel=1)
+  digitalWrite(OUT_D_BEAT, HIGH);
+  delay(10);
+  digitalWrite(OUT_D_BEAT, LOW);
+  delay(50);
+  digitalWrite(OUT_D_BEAT, HIGH);
+  delay(10);
+  digitalWrite(OUT_D_BEAT, LOW);
   midiPoLb.begin();
 }
 
@@ -199,22 +217,36 @@ void handleClock() {
     // clock_ticks (in)  0123456789012345678901234
     // call pulse?       ynnnnnnnnnnnynnnnnnnnnnny
     // clock_ticks (out) 1234567890123456789012341
+    //
+    // You can avoid low current/voltage at trinket by running V-trigs to an inverter/buffer
+    // connect pin 1 (OUT_D_BEAT) to a NPN and use its collector as the LB gate-sync/s-trig
+    // 5v to 10k Ohm to collector pulls up output, emitter direct to ground, OUT_D_BEAT to 1k Ohm to bias
+    // When OUT_D_BEAT is low, collector/LB signal is pulled high, providing 5v gate
+    // When OUT_D_BEAT is high, the 3ish volts and low mA on OUT_D_BEAT will allow flow from collector-emitter, shorting the signal
+    // This code avoids using pin 4 to as an output for variable pulse/frequency divider
+    // pin 3 is 2 PPQN (eigth notes)
+    // pin 1 is 1 pulse per measure (whole notes)
+    // pin 4 could be eigth, quarter, half, or whole
+    // ex eigth: if clock_ticks % 12
+    // ex: quarter: if clock_ticks % 24 == 0
+    // ex: half: if clock_ticks % 24 == 0 && beats % 2 == 0
+    // ex: whole: if clock_ticks % 24 == 0 && beats == 0
     digitalWrite(OUT_D_PO_SYNC, HIGH);
-    if (beats == 0) {
+    if ((clock_ticks % 24) == 0 && beats == 0) {
       digitalWrite(OUT_D_BEAT, HIGH);
     }
     delay(SYNC_PULSE_PERIOD);
     digitalWrite(OUT_D_PO_SYNC, LOW);
-    if (beats == 0) {
+    if ((clock_ticks % 24) == 0 && beats == 0) {
       digitalWrite(OUT_D_BEAT, LOW);
     }
-    beats = (beats + 1) % 8;  // blink led every measure to give user ability to catch drift
-    // the built-in LED should blink at same time as step 1 in your sequencer
   }
   // http://lauterzeit.com/arp_lfo_seq_sync/
   if ((clock_ticks % 24) == 0) {
     // avoid eventual overflow
     clock_ticks = 0;
+    beats = (beats + 1) % 4;  // blink led every measure to give user ability to catch drift
+    // the built-in LED should blink at same time as step 1 in your sequencer
   }
   clock_ticks++;
 }
