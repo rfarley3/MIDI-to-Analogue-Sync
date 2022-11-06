@@ -112,6 +112,7 @@
  */
 #define IN_D_MIDI 0
 #define OUT_D_BEAT 1  // on board LED is on pin 1
+#define OUT_D_LB_SYNC 2
 // pin 2 aka dread 2, aka aread 1 is reserved for ctrl input (momentary button or 1k pot)
 #define OUT_D_PO_SYNC 3
 #define OUT_A_LB_CV 4  // will be modified to use timer1 to avoid conflict with timer0 use for millis/delay
@@ -200,10 +201,10 @@ void setup() {
   pinMode(OUT_D_BEAT, OUTPUT);
   digitalWrite(OUT_D_BEAT, LOW);
   //SYNC_PULSE_ON_MILLIS = 0;
-  //pinMode(OUT_D_LB_SYNC, OUTPUT);
-  //digitalWrite(OUT_D_LB_SYNC, LOW);
+  pinMode(OUT_D_LB_SYNC, OUTPUT);
+  digitalWrite(OUT_D_LB_SYNC, LOW);
   PWM4_init();
-  analogWrite4(0);
+  analogWrite4(0);  // OUT_A_LB_CV
   // LB_STRING_MILLIS = 0;
   // https://github.com/FortySevenEffects/arduino_midi_library/wiki/Using-Callbacks
   midiPoLb.setHandleClock(handleClock);
@@ -243,77 +244,8 @@ void loop() {
    *   - respond to stop/reset to turn off pulsing (unless IGNORE_STOP/IGNORE_RESET)
    *   Do not use delay() in combo with softwareserial read
    */
-  midiPoLb.read();
-  /* millis() are interrupt driven, which competes with software serial
-   * Reduce millis calls to prioritize midi.read/reduce its errors:
-   *   - Only call once here and pass value
-   *   - Reduce non-midi.read calls, by only doing them if its been x msecs
-   */
-  // unsigned long now = millis();
-  // if ((now - PULSE_CHECK_MILLIS) > PULSE_CHECK_PERIOD) {
-  //   sync_pin_off(now);  // undo vtrig if it's been enough time
-  //   lb_pin_high(now);  // undo strig if it's been enough time
-  //   PULSE_CHECK_MILLIS = now;
-  // }
+  midiPoLb.read();  // read turns off interrupts, uses delay which uses millis which uses timer0 and any other millis will interfere
 }
-
-
-//void start_lb() {
-//  digitalWrite(OUT_D_LB_SYNC, HIGH);
-//  LB_STRING_MILLIS = 0;
-//  // notes/cv
-//}
-//
-//
-//void stop_lb() {
-//  digitalWrite(OUT_D_LB_SYNC, LOW);
-//  LB_STRING_MILLIS = 0;
-//  // notes/cv
-//}
-//
-//
-//void lb_pin_low() {
-//  // send a strig on the LB Sync out pin
-//  digitalWrite(OUT_D_LB_SYNC, LOW);
-//  LB_STRING_MILLIS = millis();
-//}
-//
-//
-//void lb_pin_high(unsigned long now=0) {
-//  // polled each loop, if the strig has been low long enough, turn signal high
-//  if (LB_STRING_MILLIS) {
-//    if (!now) {
-//      now = millis();
-//    }
-//    // attiny millis overflow is ~49 days, logic to detect that condition out of scope for this sketch
-//    if ((now - LB_STRING_MILLIS) > LB_STRIG_PERIOD) {
-//      digitalWrite(OUT_D_LB_SYNC, HIGH);
-//      LB_STRING_MILLIS = 0;
-//    }
-//  }
-//}
-//
-//
-//void sync_pin_on() {
-//  // send a pulse on the PO/Volca/Analogue Sync out pin
-//  digitalWrite(OUT_D_PO_SYNC, HIGH);
-//  SYNC_PULSE_ON_MILLIS = millis();
-//}
-//
-//
-//void sync_pin_off(unsigned long now=0) {
-//  // polled each loop, if the pulse has been high long enough, turn it off
-//  if (SYNC_PULSE_ON_MILLIS) {
-//    if (!now) {
-//      now = millis();
-//    }
-//    // attiny millis overflow is ~49 days, logic to detect that condition out of scope for this sketch
-//    if ((now - SYNC_PULSE_ON_MILLIS) > SYNC_PULSE_PERIOD) {
-//      digitalWrite(OUT_D_PO_SYNC, LOW);
-//      SYNC_PULSE_ON_MILLIS = 0;
-//    }
-//  }
-//}
 
 
 /* MIDI Handlers
@@ -342,18 +274,18 @@ void handleClock() {
     if (beats == 0) {
       digitalWrite(OUT_D_BEAT, HIGH);
     }
-    //if ((clock_ticks % 24) == 0) {
-    //  digitalWrite(OUT_D_LB_SYNC, LOW);
-    //}
+    if ((clock_ticks % 24) == 0) {  // todo freq div
+      digitalWrite(OUT_D_LB_SYNC, LOW);
+    }
     delay(SYNC_PULSE_PERIOD);
     digitalWrite(OUT_D_PO_SYNC, LOW);
     if (beats == 0) {
       digitalWrite(OUT_D_BEAT, LOW);
     }
-    //if ((clock_ticks % 24) == 0) {
-    //  digitalWrite(OUT_D_LB_SYNC, HIGH);
-    //}
-    beats = (beats + 1) % 2;  // do led every 2 2-PPQN, aka every 1-PPQN TODO make variable for frequency divider
+    if ((clock_ticks % 24) == 0) {
+      digitalWrite(OUT_D_LB_SYNC, HIGH);
+    }
+    beats = (beats + 1) % 8;  // do led every measure. // prev 2 2-PPQN, aka every 1-PPQN TODO make variable for frequency divider
   }
   // http://lauterzeit.com/arp_lfo_seq_sync/
   if ((clock_ticks % 24) == 0) {
@@ -378,7 +310,8 @@ void handleStart() {
   // this logic assumes the 1st pulse is the 1st clock after a start
   digitalWrite(OUT_D_PO_SYNC, LOW);
   digitalWrite(OUT_D_BEAT, LOW);
-  //digitalWrite(OUT_D_LB_SYNC, HIGH);
+  digitalWrite(OUT_D_LB_SYNC, HIGH);
+  // TODO Test analogWrite4(255);  // OUT_A_LB_CV
   clock_ticks = 0;  // if pulsing and fake start comes in, you may get off beat
   beats = 0;
   pulsing = true;
@@ -404,7 +337,8 @@ void handleStop() {
   // stop_lb();
   digitalWrite(OUT_D_PO_SYNC, LOW);
   digitalWrite(OUT_D_BEAT, LOW);
-  //digitalWrite(OUT_D_LB_SYNC, LOW);
+  digitalWrite(OUT_D_LB_SYNC, LOW);
+  // TODO Test analogWrite4(0);  // OUT_A_LB_CV
 }
 
 
@@ -416,20 +350,4 @@ void handleStop() {
 //  SYNC_PULSE_ON_MILLIS = 0;
 //  digitalWrite(OUT_D_LB_SYNC, LOW);
 //  LB_STRING_MILLIS = 0;
-//}
-//
-//
-//void handleError() {
-//  // If MIDI.h can't parse the serial input, it'll call this
-//  // temporary debug, just visually show that it happened
-//  pulsing = false;
-//  stop_lb();
-//  SYNC_PULSE_ON_MILLIS = 0;
-//  digitalWrite(OUT_D_PO_SYNC, LOW);
-//  delay(100);
-//  digitalWrite(OUT_D_PO_SYNC, HIGH);
-//  delay(1000);
-//  digitalWrite(OUT_D_PO_SYNC, LOW);
-//  delay(100);
-//  digitalWrite(OUT_D_PO_SYNC, HIGH);
 //}
