@@ -1,3 +1,7 @@
+*.sw[op]
+~*
+distro/
+
 # Prerequisites
 *.d
 
